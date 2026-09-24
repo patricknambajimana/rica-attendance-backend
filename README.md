@@ -1,2 +1,3 @@
 # rica-attendance-backend
-The RICA Attendance Tracking &amp; Management System is a centralized web-based application
+
+The RICA Attendance Tracking & Management System is a centralized web-based application designed to streamline biometric data processing, automate daily attendance verification, and eliminate manual spreadsheet tracking. Built with Python, Flask, and PostgreSQL, this backend server automates the ingestion of raw 20-column Excel logs exported from fingerprint devices across RICA offices, runs an automated anomaly detection engine to identify missing punches or status mismatches, and facilitates multi-tier verification for HR and management. Furthermore, the API powers automated generation of simplified daily reports for the Executive Director, calculates performance metrics (Attendance % and Punctuality %), and provides strict Role-Based Access Control (RBAC) across administrative, departmental, and unit-level scopes.
