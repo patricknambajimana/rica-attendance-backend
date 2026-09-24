@@ -1,0 +1,14 @@
+# ─────────────────────────────────────────────
+# NODE / NPM
+# ─────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.npm/
+.yarn/
+package-lock.json.bak
+package-lock.json
+package.json
+yarn.lock.bak
