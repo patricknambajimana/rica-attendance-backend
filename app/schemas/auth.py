@@ -17,3 +17,17 @@ class ChangePasswordIn(BaseModel):
     @classmethod
     def _check_new_password(cls, v: str) -> str:
         return validate_password(v)
+
+
+class ForgotPasswordIn(BaseModel):
+    identifier: str = Field(min_length=1, validation_alias=AliasChoices("identifier", "username", "email"))
+
+
+class ResetPasswordWithTokenIn(BaseModel):
+    token: str = Field(min_length=1)
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def _check_new_password(cls, v: str) -> str:
+        return validate_password(v)

@@ -1,7 +1,9 @@
 from ..extensions import db
 from ..schemas.users import ResetPasswordIn, UserCreate, UserUpdate
+from ..utils.audit import log_action
 from ..utils.errors import AppError
 from ..utils.security import hash_password
+from ..utils.validators import role_str
 
 
 def _ensure_unique(email: str | None, username: str | None, exclude_id: str | None = None) -> None:
@@ -43,7 +45,9 @@ def create_user(body: UserCreate):
     }
     if department_id:
         data["departmentId"] = department_id
-    return db.user.create(data=data)
+    user = db.user.create(data=data)
+    log_action("MANAGE_USERS", entity_type="User", entity_id=user.id, delta={"created": user.email, "role": body.role})
+    return user
 
 
 def list_users(role: str | None, department_id: str | None, is_active: str | None):
@@ -65,7 +69,7 @@ def update_user(user_id: str, body: UserUpdate, acting_user):
     username = body.username if "username" in sent and body.username else None
     _ensure_unique(email, username, exclude_id=user.id)
 
-    new_role = body.role if "role" in sent and body.role else user.role.value
+    new_role = body.role if "role" in sent and body.role else role_str(user.role)
     new_active = body.is_active if "is_active" in sent and body.is_active is not None else user.isActive
     new_department = body.department_id if "department_id" in sent else user.departmentId
 

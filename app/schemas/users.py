@@ -2,7 +2,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
-from ..utils.validators import normalize_username, validate_password
+from ..utils.validators import normalize_username, role_str, validate_password
 
 RoleName = Literal["ADMIN", "DIRECTOR", "HOD"]
 
@@ -75,7 +75,7 @@ def user_out(u) -> dict:
         "email": u.email,
         "username": u.username,
         "full_name": u.fullName,
-        "role": u.role.value,
+        "role": role_str(u.role),
         "department_id": u.departmentId,
         "is_active": u.isActive,
         "must_change_password": u.mustChangePassword,

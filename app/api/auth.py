@@ -1,7 +1,7 @@
-from flask import Blueprint, g, jsonify, request
+from flask import Blueprint, current_app, g, jsonify, request
 from flask_jwt_extended import get_jwt, get_jwt_identity, jwt_required
 
-from ..schemas.auth import ChangePasswordIn, LoginIn
+from ..schemas.auth import ChangePasswordIn, ForgotPasswordIn, LoginIn, ResetPasswordWithTokenIn
 from ..schemas.users import user_out
 from ..services import auth_service
 from ..utils.decorators import auth_required
@@ -79,6 +79,58 @@ def logout():
     refresh_token = (request.get_json(silent=True) or {}).get("refresh_token")
     auth_service.logout(get_jwt(), g.user.id, refresh_token)
     return jsonify(message="Logged out")
+
+
+@auth_bp.post("/forgot-password")
+def forgot_password():
+    """Request a password reset token
+    ---
+    tags: [Auth]
+    parameters:
+      - in: body
+        name: body
+        required: true
+        schema:
+          type: object
+          required: [identifier]
+          properties:
+            identifier: {type: string, example: admin@rica.local}
+    responses:
+      200: {description: A generic confirmation is always returned, whether or not the account exists}
+    """
+    body = ForgotPasswordIn.model_validate(request.get_json(silent=True) or {})
+    token = auth_service.request_password_reset(body.identifier)
+
+    response = {"message": "If that account exists, a password reset has been issued."}
+    if current_app.debug and token:
+        # DEV ONLY — lets you test the flow before email sending is wired up.
+        # Never exposed when debug=False.
+        response["dev_token"] = token
+    return jsonify(response)
+
+
+@auth_bp.post("/reset-password")
+def reset_password():
+    """Reset password using a token from /forgot-password
+    ---
+    tags: [Auth]
+    parameters:
+      - in: body
+        name: body
+        required: true
+        schema:
+          type: object
+          required: [token, new_password]
+          properties:
+            token: {type: string}
+            new_password: {type: string}
+    responses:
+      200: {description: Password reset; log in with the new password}
+      400: {description: Invalid or expired token}
+    """
+    body = ResetPasswordWithTokenIn.model_validate(request.get_json(silent=True) or {})
+    auth_service.reset_password_with_token(body.token, body.new_password)
+    return jsonify(message="Password reset successful. Please log in.")
 
 
 @auth_bp.post("/change-password")

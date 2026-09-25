@@ -1,3 +1,5 @@
+import hashlib
+import secrets
 from datetime import datetime, timedelta, timezone
 
 from flask import current_app
@@ -5,8 +7,12 @@ from flask_jwt_extended import create_access_token, create_refresh_token, decode
 
 from ..extensions import db
 from ..schemas.users import user_out
+from ..utils.audit import log_action
 from ..utils.errors import AppError
 from ..utils.security import burn_password_check, hash_password, verify_password
+from ..utils.validators import role_str
+
+RESET_TOKEN_BYTES = 32
 
 
 def _now() -> datetime:
@@ -29,7 +35,7 @@ def find_user_by_identifier(identifier: str):
 def _access_token(user) -> str:
     return create_access_token(
         identity=user.id,
-        additional_claims={"role": user.role.value, "department_id": user.departmentId},
+        additional_claims={"role": role_str(user.role), "department_id": user.departmentId},
     )
 
 
@@ -73,6 +79,7 @@ def login(identifier: str, password: str) -> dict:
         where={"id": user.id},
         data={"failedLogins": 0, "lockedUntil": None, "lastLoginAt": now},
     )
+    log_action("LOGIN", user_id=user.id, entity_type="User", entity_id=user.id)
     return {
         "access_token": _access_token(user),
         "refresh_token": create_refresh_token(identity=user.id),
@@ -90,6 +97,7 @@ def refresh(user_id: str) -> dict:
 
 def logout(access_claims: dict, user_id: str, refresh_token: str | None = None) -> None:
     revoke_token(access_claims["jti"], access_claims["exp"])
+    log_action("LOGOUT", user_id=user_id, entity_type="User", entity_id=user_id)
     if refresh_token:
         try:
             decoded = decode_token(refresh_token)
@@ -109,3 +117,65 @@ def change_password(user, access_claims: dict, current_password: str, new_passwo
         data={"passwordHash": hash_password(new_password), "mustChangePassword": False},
     )
     revoke_token(access_claims["jti"], access_claims["exp"])
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def request_password_reset(identifier: str) -> str | None:
+    """
+    Create a single-use reset token for the account if it exists and is
+    active. Returns the raw token (only the caller sees this — only the
+    hash is stored), or None if there's no matching active account.
+
+    The route always replies with the same generic message either way, so
+    this function's return value must never be reflected back to an
+    unauthenticated caller except in local debug mode — it exists so you
+    can email it, or (until email is wired up) read it from the server log.
+    """
+    user = find_user_by_identifier(identifier)
+    if user is None or not user.isActive:
+        return None
+
+    raw_token = secrets.token_urlsafe(RESET_TOKEN_BYTES)
+    ttl = current_app.config["PASSWORD_RESET_TTL_MINUTES"]
+    db.passwordresettoken.create(
+        data={
+            "userId": user.id,
+            "tokenHash": _hash_token(raw_token),
+            "expiresAt": _now() + timedelta(minutes=ttl),
+        }
+    )
+
+    # TODO: replace with real email delivery once SMTP/an email provider is
+    # configured. Logging it keeps the feature usable in the meantime for an
+    # internal admin who's locked out and has server/log access.
+    current_app.logger.info(
+        "Password reset requested for %s (username=%s). Token: %s (expires in %s min)",
+        user.email, user.username, raw_token, ttl,
+    )
+    return raw_token
+
+
+def reset_password_with_token(token: str, new_password: str) -> None:
+    record = db.passwordresettoken.find_unique(where={"tokenHash": _hash_token(token)})
+    now = _now()
+
+    if (
+        record is None
+        or record.usedAt is not None
+        or _aware(record.expiresAt) < now
+    ):
+        raise AppError("Invalid or expired reset token", 400)
+
+    db.user.update(
+        where={"id": record.userId},
+        data={
+            "passwordHash": hash_password(new_password),
+            "mustChangePassword": False,
+            "failedLogins": 0,
+            "lockedUntil": None,
+        },
+    )
+    db.passwordresettoken.update(where={"id": record.id}, data={"usedAt": now})

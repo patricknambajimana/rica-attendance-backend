@@ -1,6 +1,6 @@
 generator client {
-  provider = "prisma-client-py"
-  interface = "sync"
+  provider             = "prisma-client-py"
+  interface            = "sync"
   recursive_type_depth = 5
 }
 
@@ -16,31 +16,59 @@ enum Role {
   HOD
 }
 
+enum AnomalyType {
+  MISSING_PUNCH
+  STATUS_MISMATCH
+  NEGATIVE_VALUE
+  ABSENT_INCONSISTENCY
+}
+
+enum LeaveType {
+  ANNUAL
+  SICK
+  BUSINESS_TRIP
+  MATERNITY
+  PATERNITY
+  UNPAID
+}
+
 model Department {
-  id        String   @id @default(uuid())
-  name      String   @unique
+  id        String     @id @default(uuid())
+  name      String     @unique
+  office    String?
   users     User[]
-  createdAt DateTime @default(now()) @map("created_at")
+  employees Employee[]
+  createdAt DateTime   @default(now()) @map("created_at")
+  updatedAt DateTime   @updatedAt @map("updated_at")
 
   @@map("departments")
 }
 
 model User {
-  id                 String      @id @default(uuid())
-  email              String      @unique
-  username           String      @unique
-  fullName           String      @map("full_name")
-  passwordHash       String      @map("password_hash")
-  role               Role
-  departmentId       String?     @map("department_id")
-  department         Department? @relation(fields: [departmentId], references: [id])
-  isActive           Boolean     @default(true) @map("is_active")
-  mustChangePassword Boolean     @default(true) @map("must_change_password")
-  failedLogins       Int         @default(0) @map("failed_logins")
-  lockedUntil        DateTime?   @map("locked_until")
-  lastLoginAt        DateTime?   @map("last_login_at")
-  createdAt          DateTime    @default(now()) @map("created_at")
-  updatedAt          DateTime    @updatedAt @map("updated_at")
+  id                  String               @id @default(uuid())
+  email               String               @unique
+  username            String               @unique
+  fullName            String               @map("full_name")
+  passwordHash        String               @map("password_hash")
+  role                Role
+  departmentId        String?              @map("department_id")
+  department          Department?          @relation(fields: [departmentId], references: [id])
+  isActive            Boolean              @default(true) @map("is_active")
+  mustChangePassword  Boolean              @default(true) @map("must_change_password")
+  failedLogins        Int                  @default(0) @map("failed_logins")
+  lockedUntil         DateTime?            @map("locked_until")
+  lastLoginAt         DateTime?            @map("last_login_at")
+  passwordResetTokens PasswordResetToken[]
+  attendanceBatches   AttendanceBatch[]
+  resolvedAnomalies   Anomaly[]
+  verifiedRaw         AttendanceRaw[]      @relation("RawVerifiedBy")
+  verifiedFinal       AttendanceFinal[]    @relation("FinalVerifiedBy")
+  leavesCreated       Leave[]
+  shiftsCreated       Shift[]
+  holidaysCreated     Holiday[]
+  auditLogs           AuditLog[]
+  createdAt           DateTime             @default(now()) @map("created_at")
+  updatedAt           DateTime             @updatedAt @map("updated_at")
 
   @@map("users")
 }
@@ -52,4 +80,197 @@ model TokenBlocklist {
   createdAt DateTime @default(now()) @map("created_at")
 
   @@map("token_blocklist")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  user      User      @relation(fields: [userId], references: [id])
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@map("password_reset_tokens")
+}
+
+model Employee {
+  id           String            @id @default(uuid())
+  personId     String            @unique @map("person_id")
+  fullName     String            @map("full_name")
+  departmentId String?           @map("department_id")
+  department   Department?       @relation(fields: [departmentId], references: [id])
+  position     String?
+  gender       String?
+  isActive     Boolean           @default(true) @map("is_active")
+  attendance   AttendanceRaw[]
+  finalRecords AttendanceFinal[]
+  leaves       Leave[]
+  createdAt    DateTime          @default(now()) @map("created_at")
+  updatedAt    DateTime          @updatedAt @map("updated_at")
+
+  @@index([departmentId])
+  @@map("employees")
+}
+
+model Shift {
+  id           String   @id @default(uuid())
+  name         String   @unique
+  startTime    String   @map("start_time")
+  endTime      String   @map("end_time")
+  workMinutes  Int      @map("work_minutes")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdById  String?  @map("created_by_id")
+  createdBy    User?    @relation(fields: [createdById], references: [id])
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("shifts")
+}
+
+model AttendanceBatch {
+  id             String          @id @default(uuid())
+  filename       String
+  uploadedById   String          @map("uploaded_by_id")
+  uploadedBy     User            @relation(fields: [uploadedById], references: [id])
+  rowCount       Int             @default(0) @map("row_count")
+  insertedCount  Int             @default(0) @map("inserted_count")
+  duplicateCount Int             @default(0) @map("duplicate_count")
+  anomalyCount   Int             @default(0) @map("anomaly_count")
+  records        AttendanceRaw[]
+  anomalies      Anomaly[]
+  createdAt      DateTime        @default(now()) @map("created_at")
+
+  @@map("attendance_batches")
+}
+
+model AttendanceRaw {
+  id           String          @id @default(uuid())
+  batchId      String          @map("batch_id")
+  batch        AttendanceBatch @relation(fields: [batchId], references: [id])
+  employeeId   String          @map("employee_id")
+  employee     Employee        @relation(fields: [employeeId], references: [id])
+  rowNo        Int?            @map("row_no")
+  date         DateTime
+  week         String?
+  timetable    String?
+  checkIn      String?         @map("check_in")
+  checkOut     String?         @map("check_out")
+  workMin      Int             @default(0) @map("work_min")
+  otMin        Int             @default(0) @map("ot_min")
+  attendedMin  Int             @default(0) @map("attended_min")
+  lateMin      Int             @default(0) @map("late_min")
+  earlyMin     Int             @default(0) @map("early_min")
+  absentMin    Int             @default(0) @map("absent_min")
+  leaveMin     Int             @default(0) @map("leave_min")
+  status       String
+  records      String?
+  notes        String?
+  verifiedAt   DateTime?       @map("verified_at")
+  verifiedById String?         @map("verified_by_id")
+  verifiedBy   User?           @relation("RawVerifiedBy", fields: [verifiedById], references: [id])
+  finalRecord  AttendanceFinal?
+  anomalies    Anomaly[]
+  createdAt    DateTime        @default(now()) @map("created_at")
+  updatedAt    DateTime        @updatedAt @map("updated_at")
+
+  @@unique([employeeId, date], name: "employeeId_date")
+  @@index([date])
+  @@index([batchId])
+  @@map("attendance_raw")
+}
+
+model AttendanceFinal {
+  id              String         @id @default(uuid())
+  attendanceRawId String?        @unique @map("attendance_raw_id")
+  attendanceRaw   AttendanceRaw? @relation(fields: [attendanceRawId], references: [id])
+  employeeId      String         @map("employee_id")
+  employee        Employee       @relation(fields: [employeeId], references: [id])
+  rowNo           Int?           @map("row_no")
+  date            DateTime
+  week            String?
+  timetable       String?
+  checkIn         String?        @map("check_in")
+  checkOut        String?        @map("check_out")
+  workMin         Int            @default(0) @map("work_min")
+  otMin           Int            @default(0) @map("ot_min")
+  attendedMin     Int            @default(0) @map("attended_min")
+  lateMin         Int            @default(0) @map("late_min")
+  earlyMin        Int            @default(0) @map("early_min")
+  absentMin       Int            @default(0) @map("absent_min")
+  leaveMin        Int            @default(0) @map("leave_min")
+  status          String
+  records         String?
+  notes           String?
+  verifiedById    String         @map("verified_by_id")
+  verifiedBy      User           @relation("FinalVerifiedBy", fields: [verifiedById], references: [id])
+  verifiedAt      DateTime       @default(now()) @map("verified_at")
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+
+  @@unique([employeeId, date], name: "employeeId_date")
+  @@index([date])
+  @@map("attendance_final")
+}
+
+model Anomaly {
+  id              String          @id @default(uuid())
+  batchId         String          @map("batch_id")
+  batch           AttendanceBatch @relation(fields: [batchId], references: [id])
+  attendanceRawId String          @map("attendance_raw_id")
+  attendanceRaw   AttendanceRaw   @relation(fields: [attendanceRawId], references: [id])
+  type            AnomalyType
+  message         String
+  resolved        Boolean         @default(false)
+  resolvedById    String?         @map("resolved_by_id")
+  resolvedBy      User?           @relation(fields: [resolvedById], references: [id])
+  resolvedAt      DateTime?       @map("resolved_at")
+  createdAt       DateTime        @default(now()) @map("created_at")
+
+  @@index([resolved, createdAt])
+  @@map("anomalies")
+}
+
+model Leave {
+  id          String    @id @default(uuid())
+  employeeId  String    @map("employee_id")
+  employee    Employee  @relation(fields: [employeeId], references: [id])
+  leaveType   LeaveType @map("leave_type")
+  startDate   DateTime  @map("start_date")
+  endDate     DateTime  @map("end_date")
+  reason      String?
+  createdById String    @map("created_by_id")
+  createdBy   User      @relation(fields: [createdById], references: [id])
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@index([employeeId, startDate, endDate])
+  @@map("leaves")
+}
+
+model Holiday {
+  id          String   @id @default(uuid())
+  date        DateTime @unique
+  name        String
+  isRecurring Boolean  @default(false) @map("is_recurring")
+  createdById String?  @map("created_by_id")
+  createdBy   User?    @relation(fields: [createdById], references: [id])
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@map("holidays")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?  @map("user_id")
+  user       User?    @relation(fields: [userId], references: [id])
+  action     String
+  entityType String?  @map("entity_type")
+  entityId   String?  @map("entity_id")
+  delta      Json?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([action, createdAt])
+  @@index([userId, createdAt])
+  @@map("audit_logs")
 }

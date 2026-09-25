@@ -1,23 +1,26 @@
 import re
 
-USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{2,29}$")
+_USERNAME_RE = re.compile(r"[a-z0-9_.-]{3,32}")
 
 
 def validate_password(password: str) -> str:
     if len(password) < 8:
-        raise ValueError("Password must be at least 8 characters")
-    if len(password.encode()) > 72:
-        raise ValueError("Password is too long (72 bytes maximum)")
-    if not any(c.isalpha() for c in password) or not any(c.isdigit() for c in password):
-        raise ValueError("Password must contain both letters and numbers")
+        raise ValueError("Password must be at least 8 characters long")
+    if not re.search(r"[A-Za-z]", password) or not re.search(r"\d", password):
+        raise ValueError("Password must contain at least one letter and one number")
     return password
 
 
+def role_str(role) -> str:
+    """Prisma-client-py has returned enum fields as either an Enum instance
+    (with .value) or a plain str, depending on version/config. Handle both."""
+    return getattr(role, "value", role)
+
+
 def normalize_username(username: str) -> str:
-    username = username.strip().lower()
-    if not USERNAME_RE.match(username):
+    normalized = username.strip().lower()
+    if not _USERNAME_RE.fullmatch(normalized):
         raise ValueError(
-            "Username must be 3-30 characters (letters, numbers, dot, underscore, hyphen) "
-            "and start with a letter or number"
+            "Username must be 3-32 characters: lowercase letters, numbers, '.', '_' or '-'"
         )
-    return username
+    return normalized

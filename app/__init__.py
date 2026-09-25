@@ -1,39 +1,42 @@
 from flask import Flask
-from flask_cors import CORS
-from flask_jwt_extended import JWTManager
 from flasgger import Swagger
+from flask_cors import CORS
+from dotenv import load_dotenv
 
+from .utils import jwt_handlers
 from .config import Config
-from .db import db
+from .extensions import db, jwt
+from .utils.errors import register_error_handlers
 
-jwt = JWTManager()
+load_dotenv()
 
-def create_app():
+
+def create_app() -> Flask:
     app = Flask(__name__)
-
     app.config.from_object(Config)
 
-    CORS(app)
-    jwt.init_app(app)
-    Swagger(app)
-
-    try:
+    swagger_template = {
+    "securityDefinitions": {
+        "Bearer": {
+            "type": "apiKey",
+            "name": "Authorization",
+            "in": "header",
+            "description": "Enter: Bearer <your JWT access token>",
+        }
+    },
+    "security": [{"Bearer": []}],
+}
+    # --- CORS: allow only the origins listed in CORS_ORIGINS ---
+    CORS(app, origins=app.config["CORS_ORIGINS"] or "*", supports_credentials=True)
+    # --- Database: one Prisma client, connected for the app's lifetime ---
+    if not db.is_connected():
         db.connect()
-        print("✅Prisma Connected")
-    except Exception as e:
-        print(f" Prisma Connection Error: {e}")
-
-    @jwt.token_in_blocklist_loader
-    def is_revoked(jwt_header, jwt_payload):
-        token = db.tokenblocklist.find_unique(
-            where={"jti": jwt_payload["jti"]}
-        )
-        return token is not None
-
-    from app.api.auth import auth_bp
-    from app.api.users import users_bp
-
-    app.register_blueprint(auth_bp)
-    app.register_blueprint(users_bp)
+    # --- JWT ---
+    jwt.init_app(app)
+    Swagger(app, template=swagger_template)
+    register_error_handlers(app)
+    # --- Routes ---
+    from .api import register_blueprints
+    register_blueprints(app)
 
     return app
