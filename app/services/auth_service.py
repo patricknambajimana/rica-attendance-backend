@@ -9,6 +9,7 @@ from ..extensions import db
 from ..schemas.users import user_out
 from ..utils.audit import log_action
 from ..utils.errors import AppError
+from ..utils.mailer import send_password_reset_email
 from ..utils.security import burn_password_check, hash_password, verify_password
 from ..utils.validators import role_str
 
@@ -148,13 +149,23 @@ def request_password_reset(identifier: str) -> str | None:
         }
     )
 
-    # TODO: replace with real email delivery once SMTP/an email provider is
-    # configured. Logging it keeps the feature usable in the meantime for an
-    # internal admin who's locked out and has server/log access.
-    current_app.logger.info(
-        "Password reset requested for %s (username=%s). Token: %s (expires in %s min)",
-        user.email, user.username, raw_token, ttl,
-    )
+    try:
+        emailed = send_password_reset_email(user.email, user.username, raw_token, ttl)
+    except Exception:
+        # SMTP is configured but delivery failed (bad creds, host down, etc).
+        # Don't leak that to the caller — log it and fall back to the
+        # log-only path below so the token is still recoverable by an admin.
+        current_app.logger.exception("Failed to send password reset email to %s", user.email)
+        emailed = False
+
+    if not emailed:
+        # SMTP isn't configured (or just failed above). Logging it keeps the
+        # feature usable in the meantime for an internal admin who's locked
+        # out and has server/log access.
+        current_app.logger.info(
+            "Password reset requested for %s (username=%s). Token: %s (expires in %s min)",
+            user.email, user.username, raw_token, ttl,
+        )
     return raw_token
 
 
