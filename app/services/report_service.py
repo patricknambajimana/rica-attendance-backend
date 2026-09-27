@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from calendar import monthrange
-from datetime import datetime
+from datetime import datetime, timezone
 
 from ..extensions import db
 from ..utils.audit import log_action
@@ -263,6 +263,63 @@ def day_skipped_as_non_working(dt: datetime, holiday_days, holiday_md) -> bool:
     if dt.date() in holiday_days or (dt.month, dt.day) in holiday_md:
         return True
     return False
+
+
+def my_department_summary(user, department_id: str | None = None, date_from: str | None = None, date_to: str | None = None):
+    """
+    One-call department overview for an HOD (also usable by ADMIN/DIRECTOR
+    if they pass department_id): who's in the department, today's status
+    breakdown, and a KPI summary for the given (or current-month) range.
+
+    This is a convenience wrapper — it does no scoping of its own, it just
+    calls scoped_department_id() like every other report function, so the
+    HOD lock-in and 403s behave identically to /reports/kpis etc.
+    """
+    dept_id = scoped_department_id(user, department_id)
+    if not dept_id:
+        raise AppError(
+            "No department to summarize: HOD accounts need departmentId set, "
+            "or pass ?department_id= as ADMIN/DIRECTOR",
+            400,
+        )
+
+    department = db.department.find_unique(where={"id": dept_id})
+    if department is None:
+        raise AppError("Department not found", 404)
+
+    employees = db.employee.find_many(where={"departmentId": dept_id, "isActive": True})
+
+    if not date_from or not date_to:
+        today = datetime.now(timezone.utc)
+        date_from, date_to = month_bounds(today.year, today.month)
+
+    today_str = datetime.now(timezone.utc).date().isoformat()
+    today_records = _load_effective_records(user, today_str, today_str, dept_id, None)
+    today_counts = {"present": 0, "absent": 0, "leave": 0, "weekend_or_holiday": 0, "unrecorded": 0}
+    seen_employee_ids = set()
+    for record in today_records:
+        seen_employee_ids.add(record.employeeId)
+        status = (record.status or "").upper()
+        if status == "#":
+            today_counts["weekend_or_holiday"] += 1
+        elif status == "LV":
+            today_counts["leave"] += 1
+        elif status in ATTENDED_STATUSES or (record.attendedMin or 0) > 0:
+            today_counts["present"] += 1
+        elif status == "A":
+            today_counts["absent"] += 1
+    today_counts["unrecorded"] = max(len(employees) - len(seen_employee_ids), 0)
+
+    kpis = performance_kpis(user, date_from, date_to, dept_id, None)
+
+    return {
+        "department": {"id": department.id, "name": department.name, "office": department.office},
+        "employee_count": len(employees),
+        "today": {"date": today_str, "status_counts": today_counts},
+        "period": {"from": date_from, "to": date_to},
+        "kpi_summary": kpis["summary"],
+        "employees": kpis["employees"],
+    }
 
 
 def records_to_csv(rows: list[dict], columns: tuple[str, ...] | list[str]) -> str:

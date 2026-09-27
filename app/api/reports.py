@@ -180,6 +180,42 @@ def yearly_report():
     )
 
 
+@bp.get("/my-department")
+@auth_required("ADMIN", "HOD", "DIRECTOR")
+def my_department():
+    """One-call department overview: employee count, today's attendance breakdown, and KPIs.
+    HOD is always locked to their own department; ADMIN/DIRECTOR may pass department_id.
+    ---
+    tags: [Reports]
+    security: [{Bearer: []}]
+    parameters:
+      - in: query
+        name: department_id
+        type: string
+        description: ADMIN/DIRECTOR only — ignored/rejected for HOD, who always sees their own department
+      - in: query
+        name: from
+        type: string
+        description: YYYY-MM-DD. Defaults to the 1st of the current month
+      - in: query
+        name: to
+        type: string
+        description: YYYY-MM-DD. Defaults to today
+    responses:
+      200: {description: Department summary with today's status counts and period KPIs}
+      400: {description: No department could be resolved (HOD has no departmentId, or department_id missing for ADMIN/DIRECTOR)}
+      403: {description: HOD requested a department_id other than their own}
+    """
+    return jsonify(
+        report_service.my_department_summary(
+            g.user,
+            request.args.get("department_id"),
+            request.args.get("from"),
+            request.args.get("to"),
+        )
+    )
+
+
 @bp.get("/kpis")
 @auth_required("ADMIN", "HOD", "DIRECTOR")
 def kpis():
