@@ -9,6 +9,28 @@ bp = Blueprint("audit", __name__, url_prefix="/api/audit-logs")
 @bp.get("")
 @auth_required("ADMIN")
 def list_audit_logs():
+    """List audit log entries, most recent first
+    ---
+    tags: [Audit]
+    security: [{Bearer: []}]
+    parameters:
+      - in: query
+        name: action
+        type: string
+      - in: query
+        name: user_id
+        type: string
+      - in: query
+        name: take
+        type: integer
+        default: 100
+      - in: query
+        name: skip
+        type: integer
+        default: 0
+    responses:
+      200: {description: List of audit log entries}
+    """
     where = {}
     if request.args.get("action"):
         where["action"] = request.args["action"]

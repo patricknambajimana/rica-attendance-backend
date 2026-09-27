@@ -22,7 +22,31 @@ def _csv(filename: str, body: str):
 @bp.get("/daily")
 @auth_required("ADMIN", "HOD", "DIRECTOR")
 def daily_report():
-    """Director daily report (8 columns from spec 3.2). ?date=YYYY-MM-DD&format=csv"""
+    """Director daily report (8 columns from spec 3.2)
+    ---
+    tags: [Reports]
+    security: [{Bearer: []}]
+    parameters:
+      - in: query
+        name: date
+        type: string
+        required: true
+        description: YYYY-MM-DD
+      - in: query
+        name: department_id
+        type: string
+      - in: query
+        name: office
+        type: string
+      - in: query
+        name: format
+        type: string
+        enum: [json, csv]
+        default: json
+    responses:
+      200: {description: Daily report, JSON or CSV download}
+      400: {description: Missing required 'date' parameter}
+    """
     report_date = request.args.get("date")
     if not report_date:
         raise AppError("Query parameter 'date' (YYYY-MM-DD) is required", 400)
@@ -41,6 +65,35 @@ def daily_report():
 @bp.get("/monthly")
 @auth_required("ADMIN", "HOD", "DIRECTOR")
 def monthly_report():
+    """Attendance report for a calendar month
+    ---
+    tags: [Reports]
+    security: [{Bearer: []}]
+    parameters:
+      - in: query
+        name: year
+        type: integer
+        required: true
+      - in: query
+        name: month
+        type: integer
+        required: true
+        description: 1-12
+      - in: query
+        name: department_id
+        type: string
+      - in: query
+        name: office
+        type: string
+      - in: query
+        name: format
+        type: string
+        enum: [json, csv]
+        default: json
+    responses:
+      200: {description: Monthly report, JSON or CSV download}
+      400: {description: Missing/invalid year or month}
+    """
     year = int(request.args.get("year") or 0)
     month = int(request.args.get("month") or 0)
     if not (year and 1 <= month <= 12):
@@ -61,6 +114,29 @@ def monthly_report():
 @bp.get("/quarterly")
 @auth_required("ADMIN", "HOD", "DIRECTOR")
 def quarterly_report():
+    """Attendance report for a calendar quarter
+    ---
+    tags: [Reports]
+    security: [{Bearer: []}]
+    parameters:
+      - in: query
+        name: year
+        type: integer
+        required: true
+      - in: query
+        name: quarter
+        type: integer
+        required: true
+        description: 1-4
+      - in: query
+        name: department_id
+        type: string
+      - in: query
+        name: office
+        type: string
+    responses:
+      200: {description: Quarterly report}
+    """
     year = int(request.args.get("year") or 0)
     quarter = int(request.args.get("quarter") or 0)
     date_from, date_to = report_service.quarter_bounds(year, quarter)
@@ -74,6 +150,25 @@ def quarterly_report():
 @bp.get("/yearly")
 @auth_required("ADMIN", "HOD", "DIRECTOR")
 def yearly_report():
+    """Attendance report for a calendar year
+    ---
+    tags: [Reports]
+    security: [{Bearer: []}]
+    parameters:
+      - in: query
+        name: year
+        type: integer
+        required: true
+      - in: query
+        name: department_id
+        type: string
+      - in: query
+        name: office
+        type: string
+    responses:
+      200: {description: Yearly report}
+      400: {description: Missing/invalid year}
+    """
     year = int(request.args.get("year") or 0)
     if year < 2000:
         raise AppError("Query parameter year is required", 400)
@@ -88,7 +183,40 @@ def yearly_report():
 @bp.get("/kpis")
 @auth_required("ADMIN", "HOD", "DIRECTOR")
 def kpis():
-    """Attendance % and punctuality % with spec 5.4 rating bands."""
+    """Attendance % and punctuality % with spec 5.4 rating bands
+    ---
+    tags: [Reports]
+    security: [{Bearer: []}]
+    parameters:
+      - in: query
+        name: from
+        type: string
+        description: YYYY-MM-DD (used with 'to')
+      - in: query
+        name: to
+        type: string
+        description: YYYY-MM-DD (used with 'from')
+      - in: query
+        name: year
+        type: integer
+      - in: query
+        name: month
+        type: integer
+        description: 1-12, used with 'year'
+      - in: query
+        name: quarter
+        type: integer
+        description: 1-4, used with 'year'
+      - in: query
+        name: department_id
+        type: string
+      - in: query
+        name: office
+        type: string
+    responses:
+      200: {description: Attendance and punctuality KPIs}
+      400: {description: No valid date range could be resolved from the parameters}
+    """
     date_from = request.args.get("from")
     date_to = request.args.get("to")
     year = request.args.get("year")
