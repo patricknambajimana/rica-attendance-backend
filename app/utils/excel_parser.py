@@ -13,7 +13,9 @@ or xlrd. This parser auto-detects that case and falls back to real
 """
 from __future__ import annotations
 
+import html
 import io
+import re
 from typing import Any
 
 import pandas as pd
@@ -79,54 +81,112 @@ def _looks_like_html(data: bytes) -> bool:
     return head.startswith(b"<html") or head.startswith(b"<!doctype") or b"<table" in head
 
 
-def _parse_html_export(data: bytes) -> pd.DataFrame:
+_TD_RE = re.compile(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", re.IGNORECASE | re.DOTALL)
+_BR_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_TAG_RE = re.compile(r"<[^>]+>")
+_TABLE_SPLIT_RE = re.compile(r"<table\b", re.IGNORECASE)
+
+
+def _decode_html(data: bytes) -> str:
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return data.decode("utf-16", errors="replace")
     try:
-        tables = pd.read_html(io.BytesIO(data))
-    except ValueError as exc:
-        raise AppError(f"Could not read attendance file: {exc}", 400) from exc
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return data.decode("cp1252", errors="replace")
 
-    header_row: list[Any] | None = None
-    header_table_idx: int | None = None
-    header_row_idx: int | None = None
 
-    for t_idx, table in enumerate(tables):
-        for r_idx, row in table.iterrows():
-            values = [str(v).strip() for v in row.tolist()]
-            if "Person ID" in values:
-                header_row = values
-                header_table_idx = t_idx
-                header_row_idx = r_idx
-                break
-        if header_row is not None:
-            break
+def _cell_text(raw: str) -> str:
+    text = _BR_RE.sub(" ", raw)
+    text = _TAG_RE.sub("", text)
+    text = html.unescape(text).replace("\xa0", " ")
+    return re.sub(r"\s+", " ", text).strip()
 
-    if header_row is None:
+
+def _table_cells(block: str) -> list[str]:
+    return [_cell_text(c) for c in _TD_RE.findall(block)]
+
+
+_TD_RE = re.compile(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", re.IGNORECASE | re.DOTALL)
+_BR_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_TAG_RE = re.compile(r"<[^>]+>")
+_TABLE_SPLIT_RE = re.compile(r"<table\b", re.IGNORECASE)
+
+
+def _decode_html(data: bytes) -> str:
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return data.decode("utf-16", errors="replace")
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return data.decode("cp1252", errors="replace")
+
+
+def _cell_text(raw: str) -> str:
+    text = _BR_RE.sub(" ", raw)
+    text = _TAG_RE.sub("", text)
+    text = html.unescape(text).replace("\xa0", " ")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _table_cells(block: str) -> list[str]:
+    return [_cell_text(c) for c in _TD_RE.findall(block)]
+
+
+def _parse_html_export(data: bytes) -> pd.DataFrame:
+    """
+    The device's HTML export is malformed: only the first row of each table
+    is wrapped in <tr>, the rest are bare <td> cells. HTML table parsers
+    (pandas.read_html, browsers) rebuild rows from <tr>, so they silently
+    drop nearly every data row. Instead, read every <td> in document order
+    and slice the flat cell list into rows of len(REQUIRED_COLUMNS).
+    """
+    text = _decode_html(data)
+    blocks = _TABLE_SPLIT_RE.split(text)[1:]
+    if not blocks:
+        raise AppError("Could not read attendance file: no table found", 400)
+
+    ncols = len(REQUIRED_COLUMNS)
+
+    header: list[str] | None = None
+    header_block_idx = -1
+    leftover: list[str] = []
+    for b_idx, block in enumerate(blocks):
+        cells = _table_cells(block)
+        if "Person ID" not in cells:
+            continue
+        start = cells.index("Person ID") - 1  # "No." sits just before "Person ID"
+        if start < 0 or len(cells) - start < ncols:
+            continue
+        header = cells[start:start + ncols]
+        header_block_idx = b_idx
+        leftover = cells[start + ncols:]
+        break
+
+    if header is None:
         raise AppError("Could not locate the header row (expected a 'Person ID' column)", 400)
 
-    ncols = len(header_row)
-    frames = []
+    data_cells: list[str] = []
+    if leftover:
+        if len(leftover) % ncols == 0:
+            data_cells.extend(leftover)
 
-    # any data rows sitting below the header inside its own table
-    below = tables[header_table_idx].iloc[header_row_idx + 1:]
-    if not below.empty:
-        below = below.copy()
-        below.columns = header_row
-        frames.append(below)
-
-    # subsequent tables with the same column count are more data rows;
-    # a table with a different column count (e.g. the footnote table) ends the run
-    for t_idx in range(header_table_idx + 1, len(tables)):
-        table = tables[t_idx]
-        if table.shape[1] != ncols:
+    # Following tables hold the data rows. A table whose cell count isn't a
+    # whole number of rows (the footnote / "Date/Time" footer) ends the run.
+    for block in blocks[header_block_idx + 1:]:
+        cells = _table_cells(block)
+        if not cells:
+            continue
+        if len(cells) % ncols != 0:
             break
-        table = table.copy()
-        table.columns = header_row
-        frames.append(table)
+        data_cells.extend(cells)
 
-    if not frames:
+    if not data_cells:
         raise AppError("Header row found but no data rows followed it", 400)
 
-    return pd.concat(frames, ignore_index=True)
+    rows = [data_cells[i:i + ncols] for i in range(0, len(data_cells), ncols)]
+    df = pd.DataFrame(rows, columns=header)
+    return df.replace({"": None})
 
 
 def _parse_native_excel(filename: str, data: bytes) -> pd.DataFrame:

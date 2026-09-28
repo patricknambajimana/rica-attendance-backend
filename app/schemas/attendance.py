@@ -9,6 +9,8 @@ class UploadResultOut(BaseModel):
     filename: str
     rowCount: int
     insertedCount: int
+    createdCount: int = 0
+    refreshedCount: int = 0
     duplicateCount: int
     anomalyCount: int
 
