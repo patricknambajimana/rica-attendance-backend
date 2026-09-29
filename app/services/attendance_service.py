@@ -4,6 +4,7 @@ upload -> raw database -> anomaly checker -> HR verify/edit -> attendance_final.
 """
 from __future__ import annotations
 
+import uuid
 from io import BytesIO
 from typing import Any
 
@@ -72,22 +73,10 @@ def import_attendance_file(
         [_to_raw_record(row, employee_ids[row["Person ID"]], batch.id) for row in rows]
     )
 
-    existing = _existing_raw_by_key(raw_payload)
-    to_create, to_refresh, skipped_verified = _plan_import(raw_payload, existing)
-
-    created_count = 0
-    if to_create:
-        create_result = db.attendanceraw.create_many(
-            data=to_create, skip_duplicates=True
-        )
-        created_count = (
-            create_result if isinstance(create_result, int) else create_result.count
-        )
-
-    refreshed_ids: list[str] = []
-    for existing_id, payload in to_refresh:
-        db.attendanceraw.update(where={"id": existing_id}, data=payload)
-        refreshed_ids.append(existing_id)
+    upsert_result = _bulk_upsert_attendance_raw(raw_payload)
+    created_count = len(upsert_result["created_ids"])
+    refreshed_ids = upsert_result["refreshed_ids"]
+    skipped_verified = upsert_result["skipped_verified"]
 
     if refreshed_ids:
         db.anomaly.delete_many(
@@ -439,6 +428,34 @@ def edit_and_verify(raw_id: str, user, body: AttendanceEditIn):
         delta={"before": before, "after": _snapshot(updated)},
     )
     return updated
+
+
+def bulk_edit_and_verify(items: list, user) -> dict[str, Any]:
+    """
+    Save edits to several attendance_raw rows in one call — what the
+    dashboard table's "save" action hits after someone edits a batch of
+    cells. Each row is applied through the same edit_and_verify() used by
+    the single-row PATCH endpoint (same field mapping, same anomaly-resolve
+    and promote-to-final behavior, same audit log entry per row), so a
+    bulk save behaves identically to doing each edit one at a time.
+
+    One bad row (not found, wrong department for an HOD, etc.) does not
+    fail the rest — each item's outcome is reported individually.
+    """
+    updated: list[Any] = []
+    failed: list[dict[str, Any]] = []
+    for item in items:
+        try:
+            record = edit_and_verify(item.id, user, item)
+            updated.append(record)
+        except AppError as exc:
+            failed.append({"id": item.id, "error": exc.message, "status": exc.status_code})
+    return {
+        "updatedCount": len(updated),
+        "failedCount": len(failed),
+        "updated": updated,
+        "failed": failed,
+    }
 
 
 # ============================================================
@@ -970,45 +987,111 @@ def get_attendance_stats(user) -> dict[str, Any]:
 # ============================================================
 
 def _upsert_employees_and_departments(rows: list[dict[str, Any]]) -> dict[str, str]:
-    dept_ids: dict[str, str] = {}
-    employee_ids: dict[str, str] = {}
+    """
+    Map every row's Person ID to its employee.id, creating/updating
+    departments and employees as needed.
+
+    This used to call db.department.upsert() and db.employee.upsert() once
+    per unique person — for a file with ~150 employees that's ~150+
+    individual round trips to Postgres, each paying the Prisma query-engine
+    latency on top of the network hop to the DB. That's the main reason
+    uploads were slow. Now it's 2 queries for departments and 1 (or a
+    handful, if there are thousands of employees) for employees, using a
+    single multi-row `INSERT ... ON CONFLICT DO UPDATE`.
+    """
     latest_by_person: dict[str, dict[str, Any]] = {}
     for row in rows:
         latest_by_person[row["Person ID"]] = row
 
-    for person_id, row in latest_by_person.items():
-        dept_id = None
-        dept_name = row.get("Department")
-        if dept_name:
-            if dept_name not in dept_ids:
-                dept = db.department.upsert(
-                    where={"name": dept_name},
-                    data={"create": {"name": dept_name}, "update": {}},
-                )
-                dept_ids[dept_name] = dept.id
-            dept_id = dept_ids[dept_name]
+    dept_names = sorted({row["Department"] for row in latest_by_person.values() if row.get("Department")})
+    dept_ids = _bulk_upsert_departments(dept_names)
 
-        employee = db.employee.upsert(
-            where={"personId": person_id},
-            data={
-                "create": {
-                    "personId": person_id,
-                    "fullName": row.get("Name") or person_id,
-                    "departmentId": dept_id,
-                    "position": row.get("Position"),
-                    "gender": row.get("Gender"),
-                },
-                "update": {
-                    "fullName": row.get("Name") or person_id,
-                    "departmentId": dept_id,
-                    "position": row.get("Position"),
-                    "gender": row.get("Gender"),
-                },
-            },
+    employee_rows = [
+        (
+            person_id,
+            row.get("Name") or person_id,
+            dept_ids.get(row.get("Department")),
+            row.get("Position"),
+            row.get("Gender"),
         )
-        employee_ids[person_id] = employee.id
+        for person_id, row in latest_by_person.items()
+    ]
+    return _bulk_upsert_employees(employee_rows)
+
+
+def _bulk_upsert_departments(names: list[str]) -> dict[str, str]:
+    """Ensure every department name exists; return {name: id} for all of them."""
+    if not names:
+        return {}
+
+    params: list[Any] = []
+    values_sql = []
+    for i, name in enumerate(names):
+        base = i * 2
+        values_sql.append(f"(${base + 1}, ${base + 2}, now(), now())")
+        params.extend([str(uuid.uuid4()), name])
+
+    db.execute_raw(
+        f"""
+        INSERT INTO departments (id, name, created_at, updated_at)
+        VALUES {", ".join(values_sql)}
+        ON CONFLICT (name) DO NOTHING
+        """,
+        *params,
+    )
+
+    # One follow-up SELECT covers both the ones just inserted and any that
+    # already existed (DO NOTHING rows aren't returned by the insert itself).
+    placeholders = ", ".join(f"${i + 1}" for i in range(len(names)))
+    found = db.query_raw(f"SELECT id, name FROM departments WHERE name IN ({placeholders})", *names)
+    return {row["name"]: row["id"] for row in found}
+
+
+def _bulk_upsert_employees(employee_rows: list[tuple[Any, ...]]) -> dict[str, str]:
+    """
+    employee_rows: list of (person_id, full_name, department_id, position, gender).
+    Returns {person_id: employee.id}. Chunked so a very large employee list
+    still stays well under Postgres's per-query parameter limit.
+    """
+    if not employee_rows:
+        return {}
+
+    employee_ids: dict[str, str] = {}
+    for chunk in _chunked(employee_rows, 500):
+        params: list[Any] = []
+        values_sql = []
+        for i, (person_id, full_name, dept_id, position, gender) in enumerate(chunk):
+            base = i * 6
+            values_sql.append(
+                f"(${base + 1}, ${base + 2}, ${base + 3}, ${base + 4}, ${base + 5}, ${base + 6}, "
+                f"true, now(), now())"
+            )
+            params.extend([str(uuid.uuid4()), person_id, full_name, dept_id, position, gender])
+
+        rows = db.query_raw(
+            f"""
+            INSERT INTO employees
+                (id, person_id, full_name, department_id, position, gender, is_active, created_at, updated_at)
+            VALUES {", ".join(values_sql)}
+            ON CONFLICT (person_id) DO UPDATE SET
+                full_name = EXCLUDED.full_name,
+                department_id = EXCLUDED.department_id,
+                position = EXCLUDED.position,
+                gender = EXCLUDED.gender,
+                updated_at = now()
+            RETURNING id, person_id
+            """,
+            *params,
+        )
+        for row in rows:
+            employee_ids[row["person_id"]] = row["id"]
 
     return employee_ids
+
+
+def _chunked(seq: list, size: int):
+    for i in range(0, len(seq), size):
+        yield seq[i:i + size]
 
 
 def _to_raw_record(
@@ -1067,6 +1150,9 @@ def _plan_import(payload: list[dict[str, Any]], existing: dict[tuple[str, Any], 
     """
     Split parsed rows into: brand new rows, existing unverified rows to
     refresh, and count of existing verified rows that must not be touched.
+    Kept for reference/tests — the live import path now uses
+    _bulk_upsert_attendance_raw() instead, which does the same three-way
+    split in a single SQL statement rather than N individual updates.
     """
     to_create: list[dict[str, Any]] = []
     to_refresh: list[tuple[str, dict[str, Any]]] = []
@@ -1080,6 +1166,109 @@ def _plan_import(payload: list[dict[str, Any]], existing: dict[tuple[str, Any], 
         else:
             to_refresh.append((current.id, item))
     return to_create, to_refresh, skipped_verified
+
+
+def _bulk_upsert_attendance_raw(payload: list[dict[str, Any]]) -> dict[str, Any]:
+    """
+    Insert/refresh every row from one uploaded file in a single SQL
+    statement (chunked for very large files), instead of a create_many()
+    plus one update() per already-existing row.
+
+    Behavior matches the old create/refresh/skip split exactly:
+      - a (employee, date) that doesn't exist yet -> inserted
+      - one that exists and hasn't been verified by HR -> fully refreshed
+        with the new data and moved onto this batch
+      - one that exists and HAS been verified -> left completely alone
+        (Postgres's `WHERE ... verifiedAt IS NULL` in the DO UPDATE clause
+        makes this a no-op for that row, and such rows don't come back in
+        RETURNING, so we never need to fetch/compare them in Python)
+
+    `payload` must already be deduped to one row per (employeeId, date) —
+    see _dedupe_payload() — since a single INSERT statement can't target
+    the same conflicting row twice.
+    """
+    if not payload:
+        return {"created_ids": [], "refreshed_ids": [], "skipped_verified": 0}
+
+    created_ids: list[str] = []
+    refreshed_ids: list[str] = []
+    matched = 0
+
+    columns = (
+        "id", "batch_id", "employee_id", "row_no", "date", "week", "timetable",
+        "check_in", "check_out", "work_min", "ot_min", "attended_min", "late_min",
+        "early_min", "absent_min", "leave_min", "status", "records",
+    )
+    n = len(columns)
+
+    for chunk in _chunked(payload, 500):
+        params: list[Any] = []
+        values_sql = []
+        for i, item in enumerate(chunk):
+            base = i * n
+            row_placeholders = [
+                f"${base + j + 1}::timestamp" if j == 4 else f"${base + j + 1}"
+                for j in range(n)
+            ]
+            values_sql.append("(" + ", ".join(row_placeholders) + ", now(), now())")
+            params.extend(
+                [
+                    str(uuid.uuid4()),
+                    item["batchId"],
+                    item["employeeId"],
+                    item["rowNo"],
+                    item["date"],
+                    item["week"],
+                    item["timetable"],
+                    item["checkIn"],
+                    item["checkOut"],
+                    item["workMin"],
+                    item["otMin"],
+                    item["attendedMin"],
+                    item["lateMin"],
+                    item["earlyMin"],
+                    item["absentMin"],
+                    item["leaveMin"],
+                    item["status"],
+                    item["records"],
+                ]
+            )
+
+        rows = db.query_raw(
+            f"""
+            INSERT INTO attendance_raw ({", ".join(columns)}, created_at, updated_at)
+            VALUES {", ".join(values_sql)}
+            ON CONFLICT (employee_id, date) DO UPDATE SET
+                batch_id = EXCLUDED.batch_id,
+                row_no = EXCLUDED.row_no,
+                week = EXCLUDED.week,
+                timetable = EXCLUDED.timetable,
+                check_in = EXCLUDED.check_in,
+                check_out = EXCLUDED.check_out,
+                work_min = EXCLUDED.work_min,
+                ot_min = EXCLUDED.ot_min,
+                attended_min = EXCLUDED.attended_min,
+                late_min = EXCLUDED.late_min,
+                early_min = EXCLUDED.early_min,
+                absent_min = EXCLUDED.absent_min,
+                leave_min = EXCLUDED.leave_min,
+                status = EXCLUDED.status,
+                records = EXCLUDED.records,
+                updated_at = now()
+            WHERE attendance_raw.verified_at IS NULL
+            RETURNING id, (xmax = 0) AS inserted
+            """,
+            *params,
+        )
+        matched += len(chunk)
+        for row in rows:
+            if row["inserted"]:
+                created_ids.append(row["id"])
+            else:
+                refreshed_ids.append(row["id"])
+
+    skipped_verified = matched - len(created_ids) - len(refreshed_ids)
+    return {"created_ids": created_ids, "refreshed_ids": refreshed_ids, "skipped_verified": skipped_verified}
 
 
 def _anomaly(
