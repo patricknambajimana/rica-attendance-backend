@@ -33,3 +33,4 @@ class Config:
 
     # --- CORS: comma-separated list, e.g. "http://localhost:3000,https://app.rica.com" ---
     CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+   
