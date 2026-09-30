@@ -42,9 +42,10 @@ def create_app() -> Flask:
     # Apply CORS explicitly to /api/* endpoints including preflight OPTIONS requests
     CORS(
         app,
-        resources={r"/api/*": {"origins": origins}},
+        resources={r"/*": {"origins": origins}},  # Match all routes, not just /api/*
         supports_credentials=True,
         allow_headers=["Content-Type", "Authorization", "Access-Control-Allow-Credentials"],
+        expose_headers=["Authorization"],
         methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     )
     # --- Database: one Prisma client, connected for the app's lifetime ---
