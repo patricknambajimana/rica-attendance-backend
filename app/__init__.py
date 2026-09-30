@@ -27,7 +27,26 @@ def create_app() -> Flask:
     "security": [{"Bearer": []}],
 }
     # --- CORS: allow only the origins listed in CORS_ORIGINS ---
-    CORS(app, origins=app.config["CORS_ORIGINS"] or "*", supports_credentials=True)
+    # --- CORS Configuration ---
+    # Parse origins safely from Config or environment
+    raw_origins = app.config.get("CORS_ORIGINS")
+    if isinstance(raw_origins, str) and raw_origins.strip():
+        # Handles comma-separated string like "http://localhost:5173,https://yourdomain.com"
+        origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
+    elif isinstance(raw_origins, list) and raw_origins:
+        origins = raw_origins
+    else:
+        # Fallback to allow all origins if CORS_ORIGINS is not set or empty
+        origins = "*"
+
+    # Apply CORS explicitly to /api/* endpoints including preflight OPTIONS requests
+    CORS(
+        app,
+        resources={r"/api/*": {"origins": origins}},
+        supports_credentials=True,
+        allow_headers=["Content-Type", "Authorization", "Access-Control-Allow-Credentials"],
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    )
     # --- Database: one Prisma client, connected for the app's lifetime ---
     if not db.is_connected():
         db.connect()
