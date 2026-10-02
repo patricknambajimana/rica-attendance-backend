@@ -40,6 +40,7 @@ def list_audit_logs():
     logs = db.auditlog.find_many(
         where=where,
         order={"createdAt": "desc"},
+      include={"user": True},
         take=min(int(request.args.get("take", 100)), 500),
         skip=max(int(request.args.get("skip", 0)), 0),
     )
@@ -48,6 +49,9 @@ def list_audit_logs():
             {
                 "id": log.id,
                 "user_id": log.userId,
+                "user_name": log.user.fullName if log.user else None,
+                "user_username": log.user.username if log.user else None,
+                "user_email": log.user.email if log.user else None,
                 "action": log.action,
                 "entity_type": log.entityType,
                 "entity_id": log.entityId,

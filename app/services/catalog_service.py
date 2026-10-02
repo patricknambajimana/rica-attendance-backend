@@ -36,6 +36,31 @@ def update_department(user, department_id: str, body: DepartmentUpdateIn):
     return serialize_department(updated)
 
 
+def delete_department(user, department_id: str):
+    dept = db.department.find_unique(
+        where={"id": department_id},
+        include={"employees": True, "users": True},
+    )
+    if dept is None:
+        raise AppError("Department not found", 404)
+    employee_count = len(dept.employees or [])
+    user_count = len(dept.users or [])
+    if employee_count or user_count:
+        raise AppError(
+            f"Department cannot be deleted while it has {employee_count} employee(s) and {user_count} user(s) assigned",
+            409,
+        )
+    db.department.delete(where={"id": department_id})
+    log_action(
+        "MANAGE_CONFIG",
+        user_id=user.id,
+        entity_type="Department",
+        entity_id=department_id,
+        delta={"deleted": True},
+    )
+    return {"message": "Department deleted", "id": department_id}
+
+
 def serialize_department(dept) -> dict:
     return {"id": dept.id, "name": dept.name, "office": dept.office, "created_at": dept.createdAt.isoformat() if dept.createdAt else None}
 

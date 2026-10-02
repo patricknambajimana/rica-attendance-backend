@@ -195,6 +195,8 @@ def _parse_native_excel(filename: str, data: bytes) -> pd.DataFrame:
     try:
         if lower.endswith(".csv"):
             raw = pd.read_csv(buf, header=None, dtype=str)
+        elif lower.endswith(".xls"):
+            raw = pd.read_excel(buf, header=None, dtype=str, engine="xlrd")
         else:
             raw = pd.read_excel(buf, header=None, dtype=str, engine="openpyxl")
     except Exception as exc:  # noqa: BLE001 - surface as a clean 400

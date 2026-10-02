@@ -69,6 +69,12 @@ def update_department(department_id: str):
     body = DepartmentUpdateIn.model_validate(request.get_json(silent=True) or {})
     return jsonify(catalog_service.update_department(g.user, department_id, body))
 
+@bp.delete("/departments/<department_id>")
+@auth_required("ADMIN")
+def delete_department(department_id: str):
+    """Delete an empty department (Admin only)."""
+    return jsonify(catalog_service.delete_department(g.user, department_id))
+
 
 @bp.get("/employees")
 @auth_required()

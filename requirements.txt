@@ -27,8 +27,9 @@ mistune==3.3.4
 nodeenv==1.10.0
 numpy==2.5.3
 openpyxl==3.1.5
-packaging==26.3
 pandas==3.0.6
+xlrd==2.0.2
+packaging==26.3
 prisma==0.15.0
 pydantic==2.13.5
 pydantic_core==2.46.5
