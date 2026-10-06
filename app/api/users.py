@@ -100,6 +100,24 @@ def update_user(user_id):
     return jsonify(user_out(user_service.update_user(user_id, body, g.user)))
 
 
+@users_bp.delete("/<user_id>")
+@auth_required("ADMIN")
+def delete_user(user_id):
+    """Delete a user account (Admin only).
+    ---
+    tags: [Users]
+    security: [{Bearer: []}]
+    parameters:
+      - {in: path, name: user_id, type: string, required: true}
+    responses:
+      200: {description: User deleted}
+      400: {description: An admin cannot delete their own account}
+      404: {description: Not found}
+      409: {description: User has records that must be retained}
+    """
+    return jsonify(user_service.delete_user(user_id, g.user))
+
+
 @users_bp.post("/<user_id>/reset-password")
 @auth_required("ADMIN")
 def reset_password(user_id):

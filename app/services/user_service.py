@@ -93,6 +93,54 @@ def update_user(user_id: str, body: UserUpdate, acting_user):
     return db.user.update(where={"id": user.id}, data=data)
 
 
+def delete_user(user_id: str, acting_user):
+    user = db.user.find_unique(
+        where={"id": user_id},
+        include={
+            "passwordResetTokens": True,
+            "attendanceBatches": True,
+            "resolvedAnomalies": True,
+            "verifiedRaw": True,
+            "verifiedFinal": True,
+            "leavesCreated": True,
+            "shiftsCreated": True,
+            "holidaysCreated": True,
+        },
+    )
+    if user is None:
+        raise AppError("User not found", 404)
+    if user.id == acting_user.id:
+        raise AppError("You cannot delete your own account", 400)
+
+    linked_records = {
+        "password reset token(s)": user.passwordResetTokens,
+        "attendance batch(es)": user.attendanceBatches,
+        "resolved anomaly record(s)": user.resolvedAnomalies,
+        "verified attendance record(s)": [*user.verifiedRaw, *user.verifiedFinal],
+        "leave record(s)": user.leavesCreated,
+        "shift record(s)": user.shiftsCreated,
+        "holiday record(s)": user.holidaysCreated,
+    }
+    blocking_records = [label for label, records in linked_records.items() if records]
+    if blocking_records:
+        raise AppError(
+            "User cannot be deleted because it has linked "
+            + ", ".join(blocking_records)
+            + ". Deactivate the account instead.",
+            409,
+        )
+
+    log_action(
+        "MANAGE_USERS",
+        user_id=acting_user.id,
+        entity_type="User",
+        entity_id=user.id,
+        delta={"deleted": user.email},
+    )
+    db.user.delete(where={"id": user.id})
+    return {"message": "User deleted", "id": user.id}
+
+
 def reset_password(user_id: str, body: ResetPasswordIn) -> None:
     user = get_user(user_id)
     db.user.update(
